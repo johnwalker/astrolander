@@ -17,6 +17,13 @@
 (def paused       (atom false))
 (def pressed-keys (atom #{}))
 
+(defn toggle-pause []
+  (if @paused
+    (do (q/start-loop)
+        (reset! paused false))
+    (do (q/no-loop)
+        (reset! paused true))))
+
 (set! (.-onload js/window)
       (fn [& other]
         (set! (.-onkeyup js/document)
@@ -53,7 +60,7 @@
                                [3.5 1.05]
                                [3.2 1.05]]]
                       :score [500]
-                      :lander {:position [0.5 0.2]
+                      :lander {:position [2.9 -1]
                                :fuel 500}}])
 
 (defn update-velocity [{:keys [acceleration-mag] :as lander}]
@@ -195,6 +202,8 @@
           (assoc :activity :play)))
     :pause state
     :death state
+    :victory (do 
+                 (assoc state :activity :start))
     :play
     (let [state (-> state gravity-tick)
           ;; check if there is a way to fit keymap-guard onto keymap so we don't
@@ -214,7 +223,7 @@
             (check-victory))
         state))))
 
-(defn play [state]
+(defn draw-play [state]
   (q/background 0)
   (q/fill 255 255 255)
   (q/text-size 20)
@@ -267,23 +276,40 @@
         (q/vertex x y))
       (q/end-shape :close))))
 
-(defn death [state]
+(defn draw-death [state]
   (q/no-loop))
+
+(defn draw-death [state]
+  (q/fill 255 255 255)
+  (q/text-size 20)
+  (q/camera)
+  (q/text (str "Death. Press space to try again.") (/ width 3) 20)
+  (toggle-pause))
+
+(defn draw-victory [state]
+  (q/fill 255 255 255)
+  (q/text-size 20)
+  (q/camera)
+  (q/text (str "Victory. Press space to continue.") (/ width 3) 20)
+  (toggle-pause))
+
 
 (defn draw-state [state]
   (case (:activity state)
     ;; we play for one more frame to show the intersection.
-    :death (death (play state))
-    :play (play state)
-    :start (play state)))
+    :death (draw-death (draw-play state))
+    :play (draw-play state)
+    :start (draw-play state)
+    :victory (do
+               (draw-play state)
+               (draw-victory state)
+               )))
+
+
 
 (defn key-handler [state e]
   (when (= (name (:key e)) " ")
-    (if @paused
-      (do (q/start-loop)
-          (reset! paused false))
-      (do (q/no-loop)
-          (reset! paused true))))
+    (toggle-pause))
   (swap! pressed-keys conj (:key e))
   state)
 
