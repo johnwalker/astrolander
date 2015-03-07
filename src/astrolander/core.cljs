@@ -9,8 +9,10 @@
                 (.-innerHeight js/window)))
 
 (def height width)
-(def angle-sensitivity 3)
 (def pi q/PI)
+
+(def angle-sensitivity 3)
+(def angle-tolerance 5)
 
 (def paused       (atom false))
 (def pressed-keys (atom #{}))
@@ -135,9 +137,8 @@
         d (orientation p2 q2 q1)]
     (or (and (not= a b) (not= c d))
         (and (= :collinear a b c d)
-             ;; there's a function with an obvious implementation
-             ;; trying to escape, but it's unlikely to be
-             ;; used elsewhere. i'll keep the pattern in mind for
+             ;; there's a function trying to escape, but it's unlikely
+             ;; to be used elsewhere. i'll keep the pattern in mind for
              ;; later work.
              (and (or (<= (x-proj p1) (x-proj p2) (x-proj q1))
                       (<= (x-proj p1) (x-proj q2) (x-proj q1))
@@ -163,19 +164,24 @@
         (recur (first sss1)
                (rest sss1))))))
 
-(defn check-collision [state]
+(defn check-collision [state coordinates r]
   (let [vs (lander-vertices (get state :lander))
-        ;; we assume that lander-vertices returns vertices ordered
-        ;; clockwise or counterclockwise. we always get one of those
-        ;; when we deal with triangles. something to think about.
-        ;; wish i knew a mathematical term for that kind of ordering.
         ss (closed->segments vs)]
     (if (some (fn [path] (collided? ss (path->segments path)))
-              (get-in state [:level :paths]))
-      (assoc state :death-collision true)
-      state))
+              (get-in state coordinates))
+      (assoc state :activity r)
+      state)))
 
-  )
+(defn check-victory [state]
+  (if (= :goal (:activity state))
+    (let [a (get-in state [:lander :angle])]
+      (assoc state :activity
+             (if (<= (- 180 angle-tolerance)
+                     a
+                     (+ 180 angle-tolerance))
+               :victory
+               :death)))
+    state))
 
 (defn update-state [state]
   (case (:activity state)
@@ -188,21 +194,27 @@
           (assoc :level  level)
           (assoc :activity :play)))
     :pause state
+    :death state
     :play
     (let [state (-> state gravity-tick)
           ;; check if there is a way to fit keymap-guard onto keymap so we don't
           ;; have to filter all the time. then we can replace
           ;; filter with (remove nil? ...) .
-          commands (filter keymap-guard (map keymap @pressed-keys))]
-      (-> (reduce (fn [s p] (apply update-in s p)) state commands)
-          ;; explanation for above: apply each valid command. we won't
-          ;; worry about the order commands are applied. afterwards,
-          ;; hand the game off to processors that work after player
-          ;; decision.
-          move
-          check-collision))))
+          commands (filter keymap-guard (map keymap @pressed-keys))
+          state (-> (reduce (fn [s p] (apply update-in s p)) state commands)
+                    ;; explanation for above: apply each valid command. we won't
+                    ;; worry about the order commands are applied. afterwards,
+                    ;; hand the game off to processors that work after player
+                    ;; decision.
+                    move
+                    (check-collision [:level :paths] :death))]
+      (if (not= (:activity state) :death)
+        (-> state
+            (check-collision [:level :goals] :goal)
+            (check-victory))
+        state))))
 
-(defn draw-state [state]
+(defn play [state]
   (q/background 0)
   (q/fill 255 255 255)
   (q/text-size 20)
@@ -237,7 +249,6 @@
       (doseq [[a b] vs]
         (q/vertex a b))
       (q/end-shape :close)))
-
   (q/stroke-weight 3)
   (q/stroke 100 88 255)
   (let [level (:level state)]
@@ -255,6 +266,16 @@
       (doseq [[x y] (map window-scaled path)]
         (q/vertex x y))
       (q/end-shape :close))))
+
+(defn death [state]
+  (q/no-loop))
+
+(defn draw-state [state]
+  (case (:activity state)
+    ;; we play for one more frame to show the intersection.
+    :death (death (play state))
+    :play (play state)
+    :start (play state)))
 
 (defn key-handler [state e]
   (when (= (name (:key e)) " ")
