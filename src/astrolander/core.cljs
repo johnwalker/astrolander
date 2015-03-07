@@ -3,6 +3,8 @@
             [quil.core :as q :include-macros true]
             [quil.middleware :as m]))
 
+(enable-console-print!)
+
 (def width (min (.-innerWidth js/window)
                 (.-innerHeight js/window)))
 
@@ -146,17 +148,34 @@
                       (>= (y-proj p1) (y-proj p2) (y-proj q1))
                       (>= (y-proj p1) (y-proj q2) (y-proj q1))))))))
 
+(defn path->segments [vs]
+  (partition 2 1 vs))
+
+(defn closed->segments [vs]
+  (path->segments (take (inc (count vs)) (cycle vs))))
+
+(defn collided? [ss1 ss2]
+  (loop [s1 (first ss1)
+         sss1 (rest ss1)]
+    (if-let [x (some #(intersects? s1 %) ss2)]
+      [s1 x]
+      (if (seq sss1)
+        (recur (first sss1)
+               (rest sss1))))))
+
 (defn check-collision [state]
   (let [vs (lander-vertices (get state :lander))
         ;; we assume that lander-vertices returns vertices ordered
         ;; clockwise or counterclockwise. we always get one of those
         ;; when we deal with triangles. something to think about.
         ;; wish i knew a mathematical term for that kind of ordering.
-        ss (partition 2 1 (take (inc (count vs)) (cycle vs)))]
-    (.log js/console (pr-str ss))
-    )
+        ss (closed->segments vs)]
+    (if (some (fn [path] (collided? ss (path->segments path)))
+              (get-in state [:level :paths]))
+      (assoc state :death-collision true)
+      state))
 
-  state)
+  )
 
 (defn update-state [state]
   (case (:activity state)
