@@ -65,6 +65,30 @@
                                    (update-in (update-velocity lander) [:fuel] dec)
                                    lander))]})
 
+(defn window-scaled [[x y]]
+  [(* x width)
+   (* y height)])
+
+(defn rotate [x y angle]
+  (let [ra (q/radians angle)
+        ry (q/sin ra)
+        rx (q/cos ra)]
+    [(- (* x rx) (* y ry))
+     (+ (* x ry) (* y rx))]))
+
+(defn lander-vertices
+  [{:keys [position angle head base]}]
+  (let [[x y] position
+        [b h] [base head]
+        ;; rotate before translate
+        [x1 y1] (rotate (/ b  2)     (/ h -3) angle)
+        [x2 y2] (rotate (/ b -2)     (/ h -3) angle)
+        [x3 y3] (rotate       0      (/ (* 2 h) 3) angle)]
+    ;; translate after rotate
+    [[(+ x x1) (+ y y1)]
+     [(+ x x2) (+ y y2)]
+     [(+ x x3) (+ y y3)]]))
+
 (defn setup []
   (q/frame-rate 30)
   (q/color-mode :rgb)
@@ -101,13 +125,9 @@
         d (orientation p2 q2 q1)]
     (or (and (not= a b) (not= c d))
         (and (= :collinear a b c d)
-             ;; there's a function trying to get out here, but
-             ;; i don't think it's likely that it would be used
-             ;; elsewhere. will keep the pattern
-             ;;;
-             ;;; (between? projections points)
-             ;;;
-             ;;  in mind.
+             ;; there's a function with an obvious implementation
+             ;; trying to escape, but it's unlikely to be
+             ;; used elsewhere. i'll keep the pattern in mind.
              (and (or (<= (x-proj p1) (x-proj p2) (x-proj q1))
                       (<= (x-proj p1) (x-proj q2) (x-proj q1))
                       (>= (x-proj p1) (x-proj p2) (x-proj q1))
@@ -116,6 +136,13 @@
                       (<= (y-proj p1) (y-proj q2) (y-proj q1))
                       (>= (y-proj p1) (y-proj p2) (y-proj q1))
                       (>= (y-proj p1) (y-proj q2) (y-proj q1))))))))
+
+(defn check-collision [state]
+  (let [vs (lander-vertices (get state :lander))]
+    (.log js/console (pr-str vs))
+    )
+
+  state)
 
 (defn update-state [state]
   (case (:activity state)
@@ -134,32 +161,12 @@
           nxt-state (reduce (fn [s p] (apply update-in s p)) state commands)]
       (-> nxt-state
           gravity-tick
+          check-collision
           move))))
 
-(defn rotate [x y angle]
-  (let [ra (q/radians angle)
-        ry (q/sin ra)
-        rx (q/cos ra)]
-    [(- (* x rx) (* y ry))
-     (+ (* x ry) (* y rx))]))
 
-(defn lander-vertices [{:keys [position angle head base]}]
-  (let [[x y] position
-        [x y] [(* width x) (* height y)]
-        h     (* height head)
-        b     (* width base)
-        ;; rotation
-        [x1 y1] (rotate (/ b  2)     (/ h -3) angle)
-        [x2 y2] (rotate (/ b -2)     (/ h -3) angle)
-        [x3 y3] (rotate       0      (/ (* 2 h) 3) angle)]
-    ;; translation
-    [[(+ x x1) (+ y y1)]
-     [(+ x x2) (+ y y2)]
-     [(+ x x3) (+ y y3)]]))
 
-(defn window-scaled [[x y]]
-  [(* x width)
-   (* y height)])
+
 
 (defn draw-state [state]
   (q/background 0)
@@ -171,22 +178,25 @@
         [x y]  (window-scaled (get lander :position))]
     ;; set the camera to follow the lander, and zoom closer
     ;; as the lander approaches the bottom of the screen.
-    (q/camera x
-              (/ (+ height y) 2)
-              (/ (- (/ (* 4 height) 3) y) (* 2 (q/tan (/ pi 6))))
+    (q/camera
+     ;; eye
+     x
+     (/ (+ height y) 2)
+     (/ (- (/ (* 4 height) 3) y) (* 2 (q/tan (/ pi 6))))
 
-              x
-              (/ (+ height y) 2)
-              0
+     ;; center
+     x
+     (/ (+ height y) 2)
+     0
 
-              0
-              1
-              0)
-
+     ;; up
+     0
+     1
+     0)
     ;; draw the lander
     (q/stroke 122 255 122)
     (q/stroke-weight 1)
-    (let [vs (lander-vertices lander)]
+    (let [vs (mapv window-scaled (lander-vertices lander))]
       ;; we don't have to keep recomputing the vertices, but
       ;; we'll do it since it frees us from some redundancy.
       (q/begin-shape)
@@ -200,18 +210,16 @@
     ;; draw each path on the moon
     (doseq [path (:paths level)]
       (q/begin-shape)
-      (doseq [[x y] path]
-        (q/vertex (* width x)
-                  (* height y)))
+      (doseq [[x y] (map window-scaled path)]
+        (q/vertex x y))
       (q/end-shape))
 
     ;; draw the goal
     (q/stroke 255 200 255)
     (doseq [path (:goals level)]
       (q/begin-shape)
-      (doseq [[x y] path]
-        (q/vertex (* width x)
-                  (* height y)))
+      (doseq [[x y] (map window-scaled path)]
+        (q/vertex x y))
       (q/end-shape :close)))
   )
 
