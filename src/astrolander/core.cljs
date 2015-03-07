@@ -65,6 +65,14 @@
                                    (update-in (update-velocity lander) [:fuel] dec)
                                    lander))]})
 
+(defn keymap-guard
+  "Contract for the keymap. We do some crazy things, but want to make
+  sure we don't do anything too crazy."
+  [x]
+  (and (vector? x)
+       (vector? (first x))
+       (fn? (second x))))
+
 (defn window-scaled [[x y]]
   [(* x width)
    (* y height)])
@@ -127,7 +135,8 @@
         (and (= :collinear a b c d)
              ;; there's a function with an obvious implementation
              ;; trying to escape, but it's unlikely to be
-             ;; used elsewhere. i'll keep the pattern in mind.
+             ;; used elsewhere. i'll keep the pattern in mind for
+             ;; later work.
              (and (or (<= (x-proj p1) (x-proj p2) (x-proj q1))
                       (<= (x-proj p1) (x-proj q2) (x-proj q1))
                       (>= (x-proj p1) (x-proj p2) (x-proj q1))
@@ -138,8 +147,13 @@
                       (>= (y-proj p1) (y-proj q2) (y-proj q1))))))))
 
 (defn check-collision [state]
-  (let [vs (lander-vertices (get state :lander))]
-    (.log js/console (pr-str vs))
+  (let [vs (lander-vertices (get state :lander))
+        ;; we assume that lander-vertices returns vertices ordered
+        ;; clockwise or counterclockwise. we always get one of those
+        ;; when we deal with triangles. something to think about.
+        ;; wish i knew a mathematical term for that kind of ordering.
+        ss (partition 2 1 (take (inc (count vs)) (cycle vs)))]
+    (.log js/console (pr-str ss))
     )
 
   state)
@@ -148,25 +162,26 @@
   (case (:activity state)
     :start
     ;; Initialize the lander
-    (let [level  (get default-levels  (get state :level 0))
+    (let [level  (get default-levels (get state :level-number 0))
           lander (get level :lander)]
       (-> state
           (assoc :lander (merge default-lander lander))
+          (assoc :level  level)
           (assoc :activity :play)))
     :pause state
     :play
-    (let [commands (remove nil? (map keymap @pressed-keys))
-          ;; apply each command. we will not worry about order.
-          ;; order probably won't matter for astrolander, though
-          nxt-state (reduce (fn [s p] (apply update-in s p)) state commands)]
-      (-> nxt-state
-          gravity-tick
-          check-collision
-          move))))
-
-
-
-
+    (let [state (-> state gravity-tick)
+          ;; check if there is a way to fit keymap-guard onto keymap so we don't
+          ;; have to filter all the time. then we can replace
+          ;; filter with (remove nil? ...) .
+          commands (filter keymap-guard (map keymap @pressed-keys))]
+      (-> (reduce (fn [s p] (apply update-in s p)) state commands)
+          ;; explanation for above: apply each valid command. we won't
+          ;; worry about the order commands are applied. afterwards,
+          ;; hand the game off to processors that work after player
+          ;; decision.
+          move
+          check-collision))))
 
 (defn draw-state [state]
   (q/background 0)
@@ -206,7 +221,7 @@
 
   (q/stroke-weight 3)
   (q/stroke 100 88 255)
-  (let [level (default-levels (:level state))]
+  (let [level (:level state)]
     ;; draw each path on the moon
     (doseq [path (:paths level)]
       (q/begin-shape)
@@ -220,8 +235,7 @@
       (q/begin-shape)
       (doseq [[x y] (map window-scaled path)]
         (q/vertex x y))
-      (q/end-shape :close)))
-  )
+      (q/end-shape :close))))
 
 (defn key-handler [state e]
   (when (= (name (:key e)) " ")
