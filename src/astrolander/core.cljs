@@ -3,10 +3,22 @@
             [quil.core :as q :include-macros true]
             [quil.middleware :as m]))
 
-(def width (min (.-innerWidth js/window) (.-innerHeight js/window)))
-(def height width)
+(def width (min (.-innerWidth js/window)
+                (.-innerHeight js/window)))
 
+(def height width)
 (def angle-sensitivity 3)
+(def pi q/PI)
+
+(def paused       (atom false))
+(def pressed-keys (atom #{}))
+
+(set! (.-onload js/window)
+      (fn [& other]
+        (set! (.-onkeyup js/document)
+              (fn [e]
+                (swap! pressed-keys disj (keyword (str/lower-case (.-keyIdentifier e))))))
+        (.focus (.getElementById js/document "astrolander"))))
 
 (def default-lander {:head 0.08
                      :base 0.04
@@ -35,13 +47,10 @@
                       :goals [[[3.2 0.95]
                                [3.5 0.95]
                                [3.5 1.05]
-                               [3.2 1.05]
-                               [3.2 0.95]]]
+                               [3.2 1.05]]]
                       :score [500]
                       :lander {:position [0.5 0.2]
                                :fuel 500}}])
-
-(def init-state {:activity :start})
 
 (defn update-velocity [{:keys [acceleration-mag] :as lander}]
   (let [angle (q/radians (:angle lander))]
@@ -49,26 +58,17 @@
            (mapv + (:velocity lander) [(* -1 acceleration-mag (q/sin angle))
                                        (* acceleration-mag (q/cos angle))]))))
 
-(def pressed-keys (atom #{}))
-
-(set! (.-onload js/window)
-      (fn [& other]
-        (set! (.-onkeyup js/document)
-              (fn [e]
-                (swap! pressed-keys disj (keyword (str/lower-case (.-keyIdentifier e))))))
-        (.focus (.getElementById js/document "astrolander"))))
-
-(def keymap {:left [[:lander :angle] - angle-sensitivity]
+(def keymap {:left  [[:lander :angle] - angle-sensitivity]
              :right [[:lander :angle] + angle-sensitivity]
-             :up   [[:lander] (fn [{:keys [fuel] :as lander}]
-                                (if (pos? fuel)
-                                  (update-in (update-velocity lander) [:fuel] dec)
-                                  lander))]})
+             :up    [[:lander] (fn [{:keys [fuel] :as lander}]
+                                 (if (pos? fuel)
+                                   (update-in (update-velocity lander) [:fuel] dec)
+                                   lander))]})
 
 (defn setup []
   (q/frame-rate 30)
   (q/color-mode :rgb)
-  init-state)
+  {:activity :start})
 
 (defn move [state]
   (update-in state [:lander]
@@ -81,22 +81,43 @@
     (update-in state [:lander :velocity]
                #(mapv + % [0 gravity-mag]))))
 
-(defn coords->line [[x1 y1] [x2 y2]]
-  (if (not= x1 x2)
-    (let [m (/ (- y2 y1)
-               (- x2 x1))
-          b (- y1 (* m x1))]
-      [m b])
-    (.log js/console "special case i haven't handled in coords->line :/")))
+(defn orientation [[x1 y1] [x2 y2] [x3 y3]]
+  (let [c (- (* (- y2 y1) (- x3 x2))
+             (* (- y3 y2) (- x2 x1)))]
+    (cond (pos? c) :clockwise
+          (neg? c) :counter-clockwise
+          :else    :collinear)))
 
-(defn path->lines [path]
-  (mapv #(apply coords->line %) (partition 2 1 path)))
+(defn x-proj [[x _]] x)
 
-(defn compute-lines [level]
-  (mapv path->lines (get level :paths)))
+(defn y-proj [[_ y]] y)
+
+(defn intersects? [segment-1 segment-2]
+  (let [[p1 q1] segment-1
+        [p2 q2] segment-2
+        a (orientation p1 q1 p2)
+        b (orientation p1 q1 q2)
+        c (orientation p2 q2 p1)
+        d (orientation p2 q2 q1)]
+    (or (and (not= a b) (not= c d))
+        (and (= :collinear a b c d)
+             ;; there's a function trying to get out here, but
+             ;; i don't think it's likely that it would be used
+             ;; elsewhere. will keep the pattern
+             ;;;
+             ;;; (between? projections points)
+             ;;;
+             ;;  in mind.
+             (and (or (<= (x-proj p1) (x-proj p2) (x-proj q1))
+                      (<= (x-proj p1) (x-proj q2) (x-proj q1))
+                      (>= (x-proj p1) (x-proj p2) (x-proj q1))
+                      (>= (x-proj p1) (x-proj q2) (x-proj q1)))
+                  (or (<= (y-proj p1) (y-proj p2) (y-proj q1))
+                      (<= (y-proj p1) (y-proj q2) (y-proj q1))
+                      (>= (y-proj p1) (y-proj p2) (y-proj q1))
+                      (>= (y-proj p1) (y-proj q2) (y-proj q1))))))))
 
 (defn update-state [state]
-  (.log js/console (pr-str (:obstacles state)))
   (case (:activity state)
     :start
     ;; Initialize the lander
@@ -104,82 +125,95 @@
           lander (get level :lander)]
       (-> state
           (assoc :lander (merge default-lander lander))
-          (assoc :activity :play)
-          (assoc :obstacles (compute-lines level))))
+          (assoc :activity :play)))
     :pause state
     :play
-    (let [commands (filter identity (map keymap @pressed-keys))
-          state (reduce (fn [s p] (apply update-in s p)) state commands)]
-      (-> state
+    (let [commands (remove nil? (map keymap @pressed-keys))
+          ;; apply each command. we will not worry about order.
+          ;; order probably won't matter for astrolander, though
+          nxt-state (reduce (fn [s p] (apply update-in s p)) state commands)]
+      (-> nxt-state
           gravity-tick
           move))))
 
-(defn intersection [[a b] [c d]]
-  (when (not= a c)
-    (/ (- d b) (- a c))))
+(defn rotate [x y angle]
+  (let [ra (q/radians angle)
+        ry (q/sin ra)
+        rx (q/cos ra)]
+    [(- (* x rx) (* y ry))
+     (+ (* x ry) (* y rx))]))
 
-(defn t-intersections [triangle line]
-  (map #(intersection % line) triangle))
+(defn lander-vertices [{:keys [position angle head base]}]
+  (let [[x y] position
+        [x y] [(* width x) (* height y)]
+        h     (* height head)
+        b     (* width base)
+        ;; rotation
+        [x1 y1] (rotate (/ b  2)     (/ h -3) angle)
+        [x2 y2] (rotate (/ b -2)     (/ h -3) angle)
+        [x3 y3] (rotate       0      (/ (* 2 h) 3) angle)]
+    ;; translation
+    [[(+ x x1) (+ y y1)]
+     [(+ x x2) (+ y y2)]
+     [(+ x x3) (+ y y3)]]))
 
-(defn collide? [triangle line [a b]]
-  (seq (filter #(and (number? %)
-                     (<= a % b))
-               (t-intersections triangle line))))
+(defn window-scaled [[x y]]
+  [(* x width)
+   (* y height)])
 
 (defn draw-state [state]
   (q/background 0)
   (q/fill 255 255 255)
   (q/text-size 20)
   (q/text (str "Fuel: " (get-in state [:lander :fuel])) 25 50)
-
-  (let [lander (:lander state)
-        [x y] (:position lander)
-        [x y] [(* width x) (* height y)]]
+  (q/no-fill)
+  (let [lander (get state :lander)
+        [x y]  (window-scaled (get lander :position))]
+    ;; set the camera to follow the lander, and zoom closer
+    ;; as the lander approaches the bottom of the screen.
     (q/camera x
               (/ (+ height y) 2)
-              (/ (- (/ (* 4 height) 3) y) (* 2 (q/tan (/ q/PI 6))))
+              (/ (- (/ (* 4 height) 3) y) (* 2 (q/tan (/ pi 6))))
+
               x
               (/ (+ height y) 2)
               0
+
               0
               1
-              0))
+              0)
+
+    ;; draw the lander
+    (q/stroke 122 255 122)
+    (q/stroke-weight 1)
+    (let [vs (lander-vertices lander)]
+      ;; we don't have to keep recomputing the vertices, but
+      ;; we'll do it since it frees us from some redundancy.
+      (q/begin-shape)
+      (doseq [[a b] vs]
+        (q/vertex a b))
+      (q/end-shape :close)))
 
   (q/stroke-weight 3)
   (q/stroke 100 88 255)
-  (q/no-fill)
   (let [level (default-levels (:level state))]
+    ;; draw each path on the moon
     (doseq [path (:paths level)]
       (q/begin-shape)
       (doseq [[x y] path]
         (q/vertex (* width x)
                   (* height y)))
-      (q/end-shape)))
-  (q/stroke 255 200 255)
-  (let [level (default-levels (:level state))]
+      (q/end-shape))
+
+    ;; draw the goal
+    (q/stroke 255 200 255)
     (doseq [path (:goals level)]
       (q/begin-shape)
       (doseq [[x y] path]
         (q/vertex (* width x)
                   (* height y)))
-      (q/end-shape)))
-  (q/stroke 122 255 122)
-  (q/stroke-weight 1)
-  (let [lander (:lander state)
-        [x y] (:position lander)
-        [x y] [(* width x) (* height y)]
-        angle (:angle lander)
-        h     (* height (:head lander))
-        b     (* width (:base lander))]
-    (q/translate x y)
-    (q/rotate (q/radians angle))
-    (q/triangle (/ b 2) (/ h -3)
-                (/ (- b) 2) (/ h -3)
-                0 (/ (* 2 h) 3))
-    (q/rotate 0))
+      (q/end-shape :close)))
   )
-
-(def paused (atom false))
 
 (defn key-handler [state e]
   (when (= (name (:key e)) " ")
