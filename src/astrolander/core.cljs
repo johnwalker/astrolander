@@ -1,17 +1,18 @@
 (ns astrolander.core
-  (:require [clojure.string :as str]
-            [quil.core :as q :include-macros true]
-            [quil.middleware :as m]))
-
-(enable-console-print!)
+  (:require
+   [clojure.string :as str]
+   [quil.core :as q :include-macros true]
+   [quil.middleware :as m]))
 
 (def width (min (.-innerWidth js/window)
                 (.-innerHeight js/window)))
 
 (def height width)
+
 (def pi q/PI)
 
 (def angle-sensitivity 3)
+
 (def angle-tolerance 5)
 
 (def paused       (atom false))
@@ -28,20 +29,40 @@
       (fn [& other]
         (set! (.-onkeyup js/document)
               (fn [e]
-                (swap! pressed-keys disj (keyword (str/lower-case (.-keyIdentifier e))))))
+                (swap! pressed-keys disj (.-keyCode e))))
         (.focus (.getElementById js/document "astrolander"))))
 
 (def default-lander {:head 0.08
-                     :base 0.04
+                     :base 0.06
                      :angle 180
                      :fuel 400
-                     :acceleration-mag 0.00042
-                     :gravity-mag 0.00016
+                     :acceleration-mag 0.00035
+                     :gravity-mag 0.00008
                      :acceleration [0 0]
                      :velocity [0 0]
                      :position [0 0]})
 
-(def default-levels [{:paths [[[0 0.70]
+(def builtin-levels [{:paths [[[-4.0 -10]
+                               [-3.5 0]
+                               [-3.0 -5]
+                               [-2.5 0]
+                               [-2.0 -3]
+                               [-1.0 0]
+                               [0.0 0.50]
+                               [0.5 0.80]
+                               [1.0 0.90]
+                               [1.1 0.80]
+                               [1.5 0.80]
+                               ]]
+                      :goals [[[1.5 0.75]
+                               [2.0 0.75]
+                               [2.0 0.85]
+                               [1.5 0.85]]]
+                      :scores [500]
+                      :lander {:position [1.5 -0.5]
+                               :fuel 500}}
+
+                     {:paths [[[0 0.70]
                                [0.8 0.60]
                                [1.2 0.70]
                                [1.8 0.40]
@@ -59,7 +80,37 @@
                                [3.5 0.95]
                                [3.5 1.05]
                                [3.2 1.05]]]
-                      :score [500]
+                      :scores [500]
+                      :lander {:position [2.9 -1]
+                               :fuel 500}}
+
+                     {:paths [[[0 0.70]
+                               [0.8 0.60]
+                               [1.2 0.70]
+                               [1.8 0.40]
+                               [2.4 0.70]
+                               [3.0 1]
+                               [3.2 1]]
+
+                              [[3.5 1]
+                               [3.8 0.70]
+                               [4.2 1]]
+
+                              [[4.5 1]
+                               [5.5 0.70]
+                               [6.0 0.60]
+                               [6.2 0.70]]]
+                      :goals [[[3.2 0.95]
+                               [3.5 0.95]
+                               [3.5 1.05]
+                               [3.2 1.05]]
+
+                              [[4.2 0.95]
+                               [4.5 0.95]
+                               [4.5 1.05]
+                               [4.2 1.05]]]
+
+                      :scores [500 1000]
                       :lander {:position [2.9 -1]
                                :fuel 500}}])
 
@@ -69,12 +120,15 @@
            (mapv + (:velocity lander) [(* -1 acceleration-mag (q/sin angle))
                                        (* acceleration-mag (q/cos angle))]))))
 
-(def keymap {:left  [[:lander :angle] - angle-sensitivity]
-             :right [[:lander :angle] + angle-sensitivity]
-             :up    [[:lander] (fn [{:keys [fuel] :as lander}]
-                                 (if (pos? fuel)
-                                   (update-in (update-velocity lander) [:fuel] dec)
-                                   lander))]})
+;; right
+;; left
+;; up
+(def keymap {37 [[:lander :angle] - angle-sensitivity]
+             39 [[:lander :angle] + angle-sensitivity]
+             38 [[:lander] (fn [{:keys [fuel] :as lander}]
+                             (if (pos? fuel)
+                               (update-in (update-velocity lander) [:fuel] dec)
+                               lander))]})
 
 (defn keymap-guard
   "Contract for the keymap. We do some crazy things, but want to make
@@ -111,6 +165,8 @@
 (defn setup []
   (q/frame-rate 30)
   (q/color-mode :rgb)
+  (q/smooth 8)
+  (q/text-size 16)
   {:activity :start})
 
 (defn move [state]
@@ -144,9 +200,7 @@
         d (orientation p2 q2 q1)]
     (or (and (not= a b) (not= c d))
         (and (= :collinear a b c d)
-             ;; there's a function trying to escape, but it's unlikely
-             ;; to be used elsewhere. i'll keep the pattern in mind for
-             ;; later work.
+             ;; not sure if i understand this. we probably don't need all this shit.
              (and (or (<= (x-proj p1) (x-proj p2) (x-proj q1))
                       (<= (x-proj p1) (x-proj q2) (x-proj q1))
                       (>= (x-proj p1) (x-proj p2) (x-proj q1))
@@ -166,18 +220,24 @@
   (loop [s1 (first ss1)
          sss1 (rest ss1)]
     (if-let [x (some #(intersects? s1 %) ss2)]
-      [s1 x]
+      true
       (if (seq sss1)
         (recur (first sss1)
                (rest sss1))))))
 
-(defn check-collision [state coordinates r]
-  (let [vs (lander-vertices (get state :lander))
-        ss (closed->segments vs)]
-    (if (some (fn [path] (collided? ss (path->segments path)))
-              (get-in state coordinates))
-      (assoc state :activity r)
-      state)))
+(defn check-collision
+  ([state coordinates r]
+   (check-collision state coordinates r path->segments))
+  ([state coordinates r f]
+   (let [vs (lander-vertices (get state :lander))
+         ss (closed->segments vs)]
+     (if-let [i (some (fn [[idx path]] (when (collided? ss (f path)) idx))
+                      (map-indexed (fn [idx path] [idx path])
+                                   (get-in state coordinates)))]
+       (-> state
+           (assoc :activity r)
+           (assoc :check i))
+       state))))
 
 (defn check-victory [state]
   (if (= :goal (:activity state))
@@ -190,20 +250,48 @@
                :death)))
     state))
 
+(defn draw-complete [state]
+  (q/background 0)
+  (q/text "congrats you won." 25 20)
+  (q/text "here is your money back:"  25 50)
+  (toggle-pause))
+
+(defn check-completion [state]
+  ;; FIXME for non builtin levels...
+  (if (>= (:level-number state) (count builtin-levels))
+    (assoc state :activity :complete)
+    state))
+
 (defn update-state [state]
   (case (:activity state)
     :start
     ;; Initialize the lander
-    (let [level  (get default-levels (get state :level-number 0))
+    (let [level  (get builtin-levels 0)
           lander (get level :lander)]
+      (-> state
+          (assoc :lander (merge default-lander lander))
+          (assoc :level  level)
+          (assoc :activity :play)
+          (assoc :level-number 0)
+          (assoc :score 0)))
+    :continue
+    (let [level  (get builtin-levels (:level-number state))
+          lander (get level :lander default-lander)]
       (-> state
           (assoc :lander (merge default-lander lander))
           (assoc :level  level)
           (assoc :activity :play)))
     :pause state
-    :death state
-    :victory (do 
-                 (assoc state :activity :start))
+    :death (assoc state :activity :start)
+    :complete (assoc state :activity :start)
+    :victory  (-> state
+                  (assoc :activity :continue)
+                  (update-in [:score] +
+                             ((get-in state [:level :scores])
+                              (:check state))))
+    :status (-> state
+                (update-in [:level-number] inc)
+                (check-completion))
     :play
     (let [state (-> state gravity-tick)
           ;; check if there is a way to fit keymap-guard onto keymap so we don't
@@ -219,98 +307,99 @@
                     (check-collision [:level :paths] :death))]
       (if (not= (:activity state) :death)
         (-> state
-            (check-collision [:level :goals] :goal)
+            (check-collision [:level :goals] :goal closed->segments)
             (check-victory))
         state))))
 
 (defn draw-play [state]
   (q/background 0)
   (q/fill 255 255 255)
-  (q/text-size 20)
-  (q/text (str "Fuel: " (get-in state [:lander :fuel])) 25 50)
+  (q/text (str "fuel "  (get-in state [:lander :fuel])) 25 20)
+  (q/text (str "score " (get-in state [:score])) 25 50)
+  (q/text (str "level " (get-in state [:level-number])) 25 80)
   (q/no-fill)
+  (q/stroke-cap :project)
   (let [lander (get state :lander)
-        [x y]  (window-scaled (get lander :position))]
+        [x y]  (window-scaled (get lander :position))
+        ]
     ;; set the camera to follow the lander, and zoom closer
     ;; as the lander approaches the bottom of the screen.
-    (q/camera
-     ;; eye
-     x
-     (/ (+ height y) 2)
-     (/ (- (/ (* 4 height) 3) y) (* 2 (q/tan (/ pi 6))))
+    (let [z (/ (- (/ (* 4 height) 3) y) (* 2 (q/tan (/ pi 6))))
+          [y z] (if (> z 5000) [y 5000] [(/ (+ height y) 2) z])]
+      (q/camera
+       ;; eye
+       x
+       y
+       z
 
-     ;; center
-     x
-     (/ (+ height y) 2)
-     0
+       x
+       y
+       1
 
-     ;; up
-     0
-     1
-     0)
-    ;; draw the lander
-    (q/stroke 122 255 122)
-    (q/stroke-weight 1)
+       ;; up
+       0
+       1
+       0))
+    (q/stroke-weight 2)
+    (q/stroke 0 0 255 130)
+    (let [level (:level state)]
+      ;; draw each path on the moon
+      (doseq [path (:paths level)]
+        (q/begin-shape)
+        (doseq [[x y] (map window-scaled path)]
+          (q/vertex x y))
+        (q/end-shape))
+
+      ;; draw the goal
+      (q/stroke 255 200 255)
+      (doseq [path (:goals level)]
+        (q/begin-shape)
+        (doseq [[x y] (map window-scaled path)]
+          (q/vertex x y))
+        (q/end-shape :close)))
+
+    ;; draw the lander last
+    (q/stroke 230 100 230)
+    (q/stroke-weight 2)
+    (q/fill 0)
     (let [vs (mapv window-scaled (lander-vertices lander))]
       ;; we don't have to keep recomputing the vertices, but
       ;; we'll do it since it frees us from some redundancy.
       (q/begin-shape)
       (doseq [[a b] vs]
-        (q/vertex a b))
+        (q/vertex a b 0.01))
       (q/end-shape :close)))
-  (q/stroke-weight 3)
-  (q/stroke 100 88 255)
-  (let [level (:level state)]
-    ;; draw each path on the moon
-    (doseq [path (:paths level)]
-      (q/begin-shape)
-      (doseq [[x y] (map window-scaled path)]
-        (q/vertex x y))
-      (q/end-shape))
-
-    ;; draw the goal
-    (q/stroke 255 200 255)
-    (doseq [path (:goals level)]
-      (q/begin-shape)
-      (doseq [[x y] (map window-scaled path)]
-        (q/vertex x y))
-      (q/end-shape :close))))
-
-(defn draw-death [state]
-  (q/no-loop))
+  )
 
 (defn draw-death [state]
   (q/fill 255 255 255)
-  (q/text-size 20)
   (q/camera)
-  (q/text (str "Death. Press space to try again.") (/ width 3) 20)
+  (q/text (str "death. spacebar to try again.") (/ width 3) 20)
   (toggle-pause))
 
 (defn draw-victory [state]
   (q/fill 255 255 255)
-  (q/text-size 20)
   (q/camera)
-  (q/text (str "Victory. Press space to continue.") (/ width 3) 20)
+  (q/text (str "victory. spacebar to continue.") (/ width 3) 20)
   (toggle-pause))
 
 
 (defn draw-state [state]
   (case (:activity state)
     ;; we play for one more frame to show the intersection.
-    :death (draw-death (draw-play state))
+    :death (do (draw-play state)
+               (draw-death state))
     :play (draw-play state)
     :start (draw-play state)
-    :victory (do
-               (draw-play state)
-               (draw-victory state)
-               )))
-
-
+    :continue (draw-play state)
+    :complete (draw-complete state)
+    :victory (do (draw-play state)
+                 (draw-victory state))))
 
 (defn key-handler [state e]
-  (when (= (name (:key e)) " ")
-    (toggle-pause))
-  (swap! pressed-keys conj (:key e))
+  (case (:key-code e)
+    32 (toggle-pause)
+    (swap! pressed-keys conj (:key-code e)))
   state)
 
 (q/defsketch astrolander
